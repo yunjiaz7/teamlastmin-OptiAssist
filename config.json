@@ -1,0 +1,5 @@
+{
+  "ollama_host": "http://127.0.0.1:11434",
+  "medgemma_model": "bentplau/medgemma1.5-4b-it",
+  "funcgemma_model": "funcgemma"
+}

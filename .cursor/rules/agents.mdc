@@ -1,0 +1,17 @@
+---
+description: Workspace operating rules for all coding sessions
+alwaysApply: true
+---
+
+# Always Apply Workspace Rules
+
+Treat `/home/ubuntu/teamlastmin/AGENTS.md` as required instructions for every task in this workspace.
+
+Required behavior:
+- Read and follow `AGENTS.md` for all sessions and tasks.
+- Use plan mode for non-trivial tasks.
+- Track work in `tasks/todo.md` and update progress as you execute.
+- Verify changes before marking work complete.
+- Keep changes minimal, elegant, and production-safe.
+
+If any instruction conflicts, prefer the stricter requirement that improves safety and verification.

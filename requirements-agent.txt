@@ -1,0 +1,6 @@
+langgraph
+ollama
+torch
+transformers
+peft
+Pillow
