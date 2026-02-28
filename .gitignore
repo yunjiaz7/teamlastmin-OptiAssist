@@ -1,0 +1,47 @@
+.env
+__pycache__/
+*.pyc
+
+# Local generated data/artifacts
+dataset/origa_paligemma/
+
+# Python caches/build artifacts
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Training/inference outputs
+outputs/
+runs/
+checkpoints/
+wandb/
+mlruns/
+finetuned_paligemma2_det_lora/
+fundus-lesions-toolkit/
+
+# Large model files and archives
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.onnx
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Local package/cache folders
+.cache/
+
+# Local logs
+*.log
