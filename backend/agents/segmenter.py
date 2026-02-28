@@ -17,50 +17,118 @@ import io
 import logging
 import os
 import re
+import traceback
 from pathlib import Path
 
+import torch
+from peft import PeftModel
 from PIL import Image, ImageDraw
-from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
+from transformers import AutoModelForCausalLM, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Model source configuration
 #
-# Option A — Use your own local fine-tuned model:
-#   Set USE_LOCAL_MODEL = True and place the model under:
-#   backend/models/paligemma2-finetuned/
+# Option A — Use the local LoRA fine-tuned adapter (default):
+#   Set USE_LOCAL_MODEL = True. The adapter lives at:
+#   backend/models/paligemma2-finetuned/finetuned_paligemma2_det_lora/final/
+#   The base model (google/paligemma2-3b-pt-448) is downloaded from HuggingFace
+#   and the LoRA weights are applied on top.
 #
-# Option B — Use the official HuggingFace model (auto-downloaded):
+# Option B — Use the bare HuggingFace base model (no adapter):
 #   Set USE_LOCAL_MODEL = False
-#   Model ID: google/paligemma2-3b-pt-224
+#   Model ID: google/paligemma2-3b-pt-448
 #   Note: requires HuggingFace login and license agreement.
 # ---------------------------------------------------------------------------
 USE_LOCAL_MODEL = True
 
-_LOCAL_MODEL_PATH = Path(__file__).parent.parent / "models" / "paligemma2-finetuned"
-_HF_MODEL_ID = "google/paligemma2-3b-pt-224"
+_LOCAL_ADAPTER_PATH = (
+    Path(__file__).parent.parent
+    / "models"
+    / "paligemma2-finetuned"
+    / "finetuned_paligemma2_det_lora"
+    / "final"
+)
+
+# The LoRA adapter was trained on pt-448, but only pt-224 is cached locally.
+# The LoRA targets only language-model layers (q/k/v/o/gate/up/down proj),
+# whose weight shapes are identical between 224 and 448.  We therefore fall
+# back to the cached pt-224 base so we can run offline.
+_HF_MODEL_448 = "google/paligemma2-3b-pt-448"
+_HF_MODEL_224 = "google/paligemma2-3b-pt-224"
+
+def _pick_base_model() -> str:
+    """Return the HF model ID to use as the LoRA base.
+
+    Prefers pt-448 (matches fine-tune resolution) but falls back to the
+    locally-cached pt-224 so the server can start without a network download.
+    """
+    import huggingface_hub
+    cache_info = huggingface_hub.scan_cache_dir()
+    cached_ids = {repo.repo_id for repo in cache_info.repos}
+    if _HF_MODEL_448 in cached_ids:
+        logger.info("Found cached pt-448 model, using it as LoRA base.")
+        return _HF_MODEL_448
+    if _HF_MODEL_224 in cached_ids:
+        logger.warning(
+            "pt-448 not in HF cache — falling back to pt-224 as LoRA base. "
+            "Image resolution will be 224 px instead of 448 px."
+        )
+        return _HF_MODEL_224
+    # Neither cached: attempt pt-448 download (requires HF auth + network)
+    logger.warning("Neither pt-448 nor pt-224 found in HF cache. Attempting download of pt-448.")
+    return _HF_MODEL_448
 
 if USE_LOCAL_MODEL:
-    if not _LOCAL_MODEL_PATH.exists():
+    if not _LOCAL_ADAPTER_PATH.exists():
         raise FileNotFoundError(
-            f"Local PaliGemma 2 model not found at '{_LOCAL_MODEL_PATH}'. "
-            "Please place the fine-tuned model files in that directory, "
-            "or set USE_LOCAL_MODEL = False to use the HuggingFace model."
+            f"Fine-tuned LoRA adapter not found at '{_LOCAL_ADAPTER_PATH}'. "
+            "Please unzip finetuned_paligemma2_det_lora.zip into "
+            "backend/models/paligemma2-finetuned/, "
+            "or set USE_LOCAL_MODEL = False to use the bare HuggingFace model."
         )
-    MODEL_PATH = str(_LOCAL_MODEL_PATH)
-    logger.info("Using local PaliGemma 2 model from %s", MODEL_PATH)
+    ADAPTER_PATH = str(_LOCAL_ADAPTER_PATH)
+    _HF_BASE_MODEL_ID = _pick_base_model()
+    logger.info("Using local LoRA adapter from %s on top of base model %s", ADAPTER_PATH, _HF_BASE_MODEL_ID)
 else:
-    MODEL_PATH = _HF_MODEL_ID
-    logger.info("Using HuggingFace PaliGemma 2 model: %s", MODEL_PATH)
+    ADAPTER_PATH = None
+    _HF_BASE_MODEL_ID = _HF_MODEL_448
+    logger.info("Using HuggingFace PaliGemma 2 base model: %s", _HF_BASE_MODEL_ID)
 
 # ---------------------------------------------------------------------------
-# Model loading — happens once at module level to avoid per-call overhead
+# Model loading — happens once at module level to avoid per-call overhead.
+#
+# For the LoRA path:
+#   1. Load the processor from the base model ID (guaranteed correct config).
+#   2. Load the base model weights.
+#   3. Apply the LoRA adapter with PeftModel.from_pretrained().
+#   4. merge_and_unload() folds the LoRA delta weights into the base weights.
 # ---------------------------------------------------------------------------
-logger.info("Loading PaliGemma 2 processor and model from %s", MODEL_PATH)
-processor = AutoProcessor.from_pretrained(MODEL_PATH)
-model = PaliGemmaForConditionalGeneration.from_pretrained(MODEL_PATH)
-logger.info("PaliGemma 2 loaded successfully.")
+try:
+    logger.info("Loading processor from base model %s", _HF_BASE_MODEL_ID)
+    processor = AutoProcessor.from_pretrained(_HF_BASE_MODEL_ID)
+
+    if USE_LOCAL_MODEL:
+        logger.info("Loading base model weights from %s", _HF_BASE_MODEL_ID)
+        _base_model = AutoModelForCausalLM.from_pretrained(
+            _HF_BASE_MODEL_ID, torch_dtype=torch.float32
+        )
+        logger.info("Applying LoRA adapter from %s ...", ADAPTER_PATH)
+        model = PeftModel.from_pretrained(_base_model, ADAPTER_PATH)
+        model = model.merge_and_unload()
+        model.eval()
+        logger.info("LoRA adapter merged. PaliGemma 2 fine-tuned model ready.")
+    else:
+        logger.info("Loading base model weights from %s", _HF_BASE_MODEL_ID)
+        model = AutoModelForCausalLM.from_pretrained(
+            _HF_BASE_MODEL_ID, torch_dtype=torch.float32
+        )
+        model.eval()
+        logger.info("PaliGemma 2 base model loaded successfully.")
+except Exception:
+    logger.error("Model loading FAILED:\n%s", traceback.format_exc())
+    raise
 
 # Regex to capture all <loc####> tokens in sequence
 _LOC_PATTERN = re.compile(r"<loc(\d{4})>")
@@ -72,14 +140,33 @@ def _run_inference(pil_image: Image.Image, prompt: str) -> str:
 
     Args:
         pil_image: PIL Image object of the retinal scan.
-        prompt: Text prompt for the model (e.g. "segment optic disc\\n").
+        prompt: Text prompt for the model (e.g. "detect optic disc\\n").
 
     Returns:
-        Raw decoded output string including special tokens.
+        Raw decoded output string (generated tokens only, special tokens kept).
     """
     inputs = processor(text=prompt, images=pil_image, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=256)
-    raw_output = processor.decode(outputs[0], skip_special_tokens=False)
+    input_len = inputs["input_ids"].shape[-1]
+    logger.info(
+        "Processor output keys: %s  input_ids shape: %s",
+        list(inputs.keys()),
+        inputs["input_ids"].shape,
+    )
+
+    with torch.inference_mode():
+        # use_cache=False avoids a past_key_values list-vs-dict mismatch that
+        # appears in some transformers versions with PaliGemma 2.
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=256,
+            do_sample=False,
+            use_cache=False,
+        )
+
+    # Decode only the newly generated tokens (strip the echoed input prompt)
+    generated_tokens = outputs[0][input_len:]
+    raw_output = processor.decode(generated_tokens, skip_special_tokens=False)
+    logger.info("Raw PaliGemma output: %s", raw_output[:300])
     return raw_output
 
 
@@ -209,7 +296,8 @@ async def run_segmentation(image_bytes: bytes, query: str) -> dict:
         raise RuntimeError(f"Failed to decode image bytes into PIL Image: {e}") from e
 
     img_width, img_height = pil_image.size
-    prompt = f"segment {query}\n"
+    # Fine-tune was trained as a detection task — use "detect" prefix
+    prompt = f"detect {query}\n"
 
     logger.info("Running segmentation. query=%s image_size=%dx%d", query, img_width, img_height)
 
@@ -217,6 +305,7 @@ async def run_segmentation(image_bytes: bytes, query: str) -> dict:
         # Offload blocking transformer inference to a thread so the event loop stays free
         raw_output = await asyncio.to_thread(_run_inference, pil_image, prompt)
     except Exception as e:
+        logger.error("PaliGemma 2 inference FULL traceback:\n%s", traceback.format_exc())
         raise RuntimeError(f"PaliGemma 2 inference failed: {e}") from e
 
     logger.debug("Raw model output: %s", raw_output[:200])

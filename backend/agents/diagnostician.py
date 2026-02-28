@@ -88,7 +88,7 @@ pipe = pipeline("image-text-to-text", model=MODEL_PATH)
 logger.info("MedGemma pipeline loaded successfully.")
 
 
-def _run_inference(messages: list[dict], continue_final_message: bool = False) -> str:
+def _run_inference(messages: list[dict]) -> str:
     """
     Execute blocking MedGemma pipeline inference synchronously.
 
@@ -97,20 +97,11 @@ def _run_inference(messages: list[dict], continue_final_message: bool = False) -
             list-of-dicts (never a plain string) so that Gemma3Processor's
             apply_chat_template can iterate over them without hitting
             "string indices must be integers".
-        continue_final_message: When True the pipeline continues the last
-            assistant message instead of starting a new turn. Used for the
-            JSON prefill trick: the caller appends an assistant message whose
-            content starts with "{", ensuring the model cannot output any
-            preamble text before the JSON.
 
     Returns:
         Raw text content of the model's last response turn.
     """
-    output = pipe(
-        text=messages,
-        max_new_tokens=512,
-        continue_final_message=continue_final_message,
-    )
+    output = pipe(text=messages, max_new_tokens=512)
     generated = output[0]["generated_text"]
 
     if isinstance(generated, list):
@@ -120,17 +111,14 @@ def _run_inference(messages: list[dict], continue_final_message: bool = False) -
         if isinstance(last, dict):
             content = last.get("content")
             if isinstance(content, list):
-                # With continue_final_message=True the pipeline returns content
-                # in list-of-dicts format: [{"type": "text", "text": "..."}].
+                # List-format content: [{"type": "text", "text": "..."}].
                 # Extract and concatenate all text parts.
                 return "".join(
                     item.get("text", "")
                     for item in content
                     if isinstance(item, dict) and item.get("type") == "text"
                 ) or str(last)
-            # Plain string content — return directly.
             return str(content) if content else str(last)
-        # Fallback: list of plain strings — take the last one.
         return str(last)
 
     # Plain string — the pipeline returned the completion text directly.
@@ -141,9 +129,9 @@ def _parse_json(raw_text: str) -> dict:
     """
     Parse a JSON dict from the model's raw output string.
 
-    Tries strict json.loads first; if that fails, falls back to extracting
-    the substring between the first '{' and last '}' before retrying.
-    Returns FALLBACK_RESULT if both attempts fail.
+    MedGemma sometimes wraps its JSON in natural language or markdown code
+    fences.  We try three progressively looser extraction strategies before
+    giving up and returning FALLBACK_RESULT.
 
     Args:
         raw_text: The raw string output from the MedGemma pipeline.
@@ -151,13 +139,16 @@ def _parse_json(raw_text: str) -> dict:
     Returns:
         Parsed diagnosis dict, or FALLBACK_RESULT on failure.
     """
-    # Attempt 1: direct parse (model followed instructions and returned clean JSON)
+    import re
+
+    # Attempt 1: the model returned clean JSON with no surrounding text.
     try:
-        return json.loads(raw_text)
+        return json.loads(raw_text.strip())
     except json.JSONDecodeError:
         pass
 
-    # Attempt 2: extract the outermost JSON object from the string
+    # Attempt 2: extract the outermost { … } substring.
+    # Handles "Here is my analysis: {…}" style outputs.
     start = raw_text.find("{")
     end = raw_text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -166,7 +157,19 @@ def _parse_json(raw_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("JSON parsing failed for model output. Returning fallback result.")
+    # Attempt 3: strip markdown code fences (```json … ``` or ``` … ```).
+    # Handles cases where the model wraps JSON in a code block.
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(
+        "JSON parsing failed after 3 attempts. Raw output (first 400 chars): %s",
+        raw_text[:400],
+    )
     return FALLBACK_RESULT
 
 
@@ -207,25 +210,20 @@ async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
     else:
         user_content = [{"type": "text", "text": query}]
 
-    # Prefill the assistant turn with "{" so the model is physically forced to
-    # continue with a JSON object and cannot output any preamble text.
-    # continue_final_message=True tells the pipeline not to close this turn,
-    # allowing the model to generate the rest of the JSON from there.
     messages = [
         {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
         {"role": "user", "content": user_content},
-        {"role": "assistant", "content": [{"type": "text", "text": "{"}]},
     ]
 
     logger.info("Running MedGemma diagnosis. query=%s has_image=%s", query[:80], pil_image is not None)
 
     try:
         # Offload blocking pipeline call to a thread to keep the event loop free
-        raw_text = await asyncio.to_thread(_run_inference, messages, True)
+        raw_text = await asyncio.to_thread(_run_inference, messages)
     except Exception as e:
         raise RuntimeError(f"MedGemma inference failed: {e}") from e
 
-    logger.debug("Raw MedGemma output: %s", raw_text[:200])
+    logger.info("Raw MedGemma output (first 400 chars): %s", raw_text[:400])
 
     result = _parse_json(raw_text)
     logger.info("Diagnosis complete. condition=%s severity=%s", result.get("condition"), result.get("severity"))

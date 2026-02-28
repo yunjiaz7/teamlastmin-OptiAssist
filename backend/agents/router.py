@@ -31,6 +31,13 @@ OLLAMA_MODEL = "functiongemma"
 
 MAX_LOOP_ITERATIONS = 5
 
+# ---------------------------------------------------------------------------
+# BYPASS FLAG — set True to skip FunctionGemma and run both agents directly.
+# Useful when FunctionGemma is unavailable or you want to force PaliGemma.
+# The user's question is passed as-is to run_segmentation as the query.
+# ---------------------------------------------------------------------------
+BYPASS_FUNCTIONGEMMA = True
+
 # Maximum number of times we nudge FunctionGemma back onto the tool-calling
 # path when it tries to answer directly instead of calling a tool.
 MAX_NUDGE_RETRIES = 2
@@ -224,6 +231,27 @@ async def run_agentic_loop(
             "content": user_content,
         },
     ]
+
+    # ----------------------------------------------------------------
+    # BYPASS — skip FunctionGemma and run both agents unconditionally.
+    # Remove BYPASS_FUNCTIONGEMMA (or set it False) to restore normal routing.
+    # ----------------------------------------------------------------
+    if BYPASS_FUNCTIONGEMMA:
+        logger.info("BYPASS mode: skipping FunctionGemma AND MedGemma, running PaliGemma only.")
+        await emit("route_decided", "Route: analyze_location")
+
+        location: dict | None = None
+        seg_query = question.strip() or "lesions"
+        try:
+            location = await run_segmentation_cb(seg_query)
+        except Exception as exc:
+            logger.error("bypass run_segmentation_cb raised: %s", exc)
+
+        return {
+            "diagnosis": None,
+            "location": location,
+            "final_text": "",
+        }
 
     diagnosis: dict | None = None
     location: dict | None = None
