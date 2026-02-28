@@ -24,18 +24,39 @@ from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = "./models/paligemma2-finetuned"
+# ---------------------------------------------------------------------------
+# Model source configuration
+#
+# Option A — Use your own local fine-tuned model:
+#   Set USE_LOCAL_MODEL = True and place the model under:
+#   backend/models/paligemma2-finetuned/
+#
+# Option B — Use the official HuggingFace model (auto-downloaded):
+#   Set USE_LOCAL_MODEL = False
+#   Model ID: google/paligemma2-3b-pt-224
+#   Note: requires HuggingFace login and license agreement.
+# ---------------------------------------------------------------------------
+USE_LOCAL_MODEL = True
+
+_LOCAL_MODEL_PATH = Path(__file__).parent.parent / "models" / "paligemma2-finetuned"
+_HF_MODEL_ID = "google/paligemma2-3b-pt-224"
+
+if USE_LOCAL_MODEL:
+    if not _LOCAL_MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Local PaliGemma 2 model not found at '{_LOCAL_MODEL_PATH}'. "
+            "Please place the fine-tuned model files in that directory, "
+            "or set USE_LOCAL_MODEL = False to use the HuggingFace model."
+        )
+    MODEL_PATH = str(_LOCAL_MODEL_PATH)
+    logger.info("Using local PaliGemma 2 model from %s", MODEL_PATH)
+else:
+    MODEL_PATH = _HF_MODEL_ID
+    logger.info("Using HuggingFace PaliGemma 2 model: %s", MODEL_PATH)
 
 # ---------------------------------------------------------------------------
 # Model loading — happens once at module level to avoid per-call overhead
 # ---------------------------------------------------------------------------
-_model_path = Path(MODEL_PATH)
-if not _model_path.exists():
-    raise FileNotFoundError(
-        f"PaliGemma 2 model not found at '{MODEL_PATH}'. "
-        "Please download or fine-tune the model and place it at that path."
-    )
-
 logger.info("Loading PaliGemma 2 processor and model from %s", MODEL_PATH)
 processor = AutoProcessor.from_pretrained(MODEL_PATH)
 model = PaliGemmaForConditionalGeneration.from_pretrained(MODEL_PATH)
