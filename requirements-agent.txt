@@ -4,3 +4,7 @@ torch
 transformers
 peft
 Pillow
+fastapi
+uvicorn
+python-multipart
+pydantic

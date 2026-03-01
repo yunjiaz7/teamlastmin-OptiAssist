@@ -43,5 +43,12 @@ fundus-lesions-toolkit/
 # Local package/cache folders
 .cache/
 
+# Node
+node_modules/
+frontend/package-lock.json
+
+# Uploaded images (runtime data)
+uploads/
+
 # Local logs
 *.log

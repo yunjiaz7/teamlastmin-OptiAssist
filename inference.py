@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         "--annotations",
         type=Path,
         default=Path(
-            "/home/ubuntu/teamlastmin/dataset/origa_paligemma/dataset/_annotations.valid.jsonl"
+            "/home/ubuntu/teamlastmin/dataset/origa_paligemma/dataset/_annotations.train.jsonl"
         ),
         help="JSONL file used to pick sample images/prompts.",
     )

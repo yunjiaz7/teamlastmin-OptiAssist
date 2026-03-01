@@ -1,0 +1,86 @@
+.app-shell {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+  font-family: Arial, sans-serif;
+  color: #111827;
+}
+
+h1 {
+  margin-bottom: 16px;
+}
+
+.panel {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  background: #f9fafb;
+}
+
+.upload-form,
+.chat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+textarea {
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+}
+
+button {
+  width: fit-content;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.preview-image {
+  width: 100%;
+  max-width: 420px;
+  margin-top: 8px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+}
+
+.history {
+  margin-top: 12px;
+}
+
+.message {
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+
+.message.user {
+  background: #e0f2fe;
+}
+
+.message.assistant {
+  background: #ede9fe;
+}
+
+.message-role {
+  margin: 0 0 6px 0;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.error {
+  color: #b91c1c;
+  font-weight: 600;
+}
