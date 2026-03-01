@@ -189,13 +189,17 @@ def run_paligemma_detection(
         raise
 
     image = Image.open(image_path).convert("RGB")
-    w, h = image.size
+    w, h = image.size  # keep originals for bounding-box rescaling
+
+    # PaliGemma was trained on 448×448 — always resize before inference
+    MODEL_SIZE = 448
+    model_image = image.resize((MODEL_SIZE, MODEL_SIZE), Image.LANCZOS)
 
     # PaliGemma detection prompt always starts with "detect"
     prompt = query_context if query_context.startswith("detect") else f"detect {query_context}"
-    logger.info("Running inference. prompt=%r image=%dx%d", prompt, w, h)
+    logger.info("Running inference. prompt=%r image=%dx%d (resized to %dx%d)", prompt, w, h, MODEL_SIZE, MODEL_SIZE)
 
-    inputs = processor(text=prompt, images=image, return_tensors="pt")
+    inputs = processor(text=prompt, images=model_image, return_tensors="pt")
     input_len = inputs["input_ids"].shape[-1]
     logger.info("Processor keys: %s", list(inputs.keys()))
 

@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "functiongemma"
 
-MAX_LOOP_ITERATIONS = 5
+MAX_LOOP_ITERATIONS = 8
 
 # ---------------------------------------------------------------------------
 # BYPASS FLAG — set True to skip FunctionGemma and run both agents directly.
 # Useful when FunctionGemma is unavailable or you want to force PaliGemma.
 # The user's question is passed as-is to run_segmentation as the query.
 # ---------------------------------------------------------------------------
-BYPASS_FUNCTIONGEMMA = True
+BYPASS_FUNCTIONGEMMA = False
 
 # Maximum number of times we nudge FunctionGemma back onto the tool-calling
 # path when it tries to answer directly instead of calling a tool.
@@ -56,31 +56,60 @@ DEVELOPER_MESSAGE = (
     "You are a model that can do function calling with the following functions"
 )
 
-# Orchestration instructions live in the USER message, not the developer
-# message, so they don't interfere with the function-calling activation signal.
+# ---------------------------------------------------------------------------
+# Orchestration instructions
+#
+# These live in the USER message — NOT in the developer message — so they
+# do not interfere with FunctionGemma's function-calling activation signal.
+#
+# Agent roles:
+#   run_diagnosis    → MedGemma 4B (general medical model by Google).
+#                      Analyzes the retinal fundus image; returns structured JSON
+#                      with condition, severity, findings, recommendation.
+#
+#   run_segmentation → PaliGemma 2 (fine-tuned vision model by Google).
+#                      Detects optic disc and optic cup bounding boxes from
+#                      the fundus image. Output is passed directly to MedGemma
+#                      for the final summary.
+# ---------------------------------------------------------------------------
 _ORCHESTRATION_INSTRUCTIONS = (
     "\n\n---\n"
-    "INSTRUCTIONS — you MUST follow these exactly:\n"
-    "1. You are NOT allowed to answer the question directly.\n"
-    "2. You MUST call tools to complete the analysis.\n"
-    "3. Your FIRST action MUST be to call run_diagnosis.\n"
-    "4. After run_diagnosis returns:\n"
-    "   a. If findings contain abnormal lesions → call run_segmentation "
-    "with the SPECIFIC lesion name from the findings "
-    "(e.g. 'cotton wool spots', 'microaneurysms'). "
-    "Do NOT pass the user's original question as the query.\n"
-    "   b. If the condition is Normal or findings are empty → call finish.\n"
-    "5. After all needed tools have run → call finish.\n"
-    "Begin now by calling run_diagnosis."
+    "MANDATORY RULES — follow exactly, no exceptions:\n"
+    "1. Never answer directly. Only call tools.\n"
+    "2. ALWAYS call run_diagnosis first.\n"
+    "3. After run_diagnosis returns:\n"
+    "   - If the question is about optic disc, optic cup, cup-to-disc ratio, "
+    "CDR, glaucoma, or disc cupping: "
+    "MUST call run_segmentation, then call finish.\n"
+    "   - Otherwise: call finish.\n"
+    "4. finish is always the last call.\n"
+    "Start now: call run_diagnosis."
 )
 
 # Message injected when FunctionGemma answers in text instead of calling a tool
+# (pre-diagnosis phase)
 _NUDGE_MESSAGE = (
     "You responded with text instead of calling a tool. "
     "This is not allowed. "
     "You MUST call run_diagnosis right now. "
     "Do not output any text — only call the run_diagnosis tool."
 )
+
+# Message injected when FunctionGemma skips run_segmentation after diagnosis
+# for CDR / optic-disc related questions.
+_NUDGE_SEGMENTATION_MESSAGE = (
+    "You responded with text instead of calling run_segmentation. "
+    "This is not allowed. "
+    "The question is about cup-to-disc ratio / optic disc / glaucoma. "
+    "You MUST call run_segmentation right now — do NOT output text."
+)
+
+# Keywords that require PaliGemma segmentation after diagnosis.
+_SEGMENTATION_KEYWORDS = frozenset({
+    "optic disc", "optic cup", "cup to disc", "cup-to-disc",
+    "cdr", "glaucoma", "disc cupping", "neuroretinal rim",
+    "cup disc", "disc cup",
+})
 
 # ---------------------------------------------------------------------------
 # Tool definitions exposed to FunctionGemma
@@ -91,9 +120,12 @@ TOOLS = [
         "function": {
             "name": "run_diagnosis",
             "description": (
-                "Run MedGemma 4B to analyze the retinal image and produce a "
-                "structured medical diagnosis including condition, severity, "
-                "findings, and recommendations. Always call this first."
+                "Run MedGemma 4B — Google's general-purpose medical AI model — "
+                "to analyze the retinal fundus image and produce a structured "
+                "medical diagnosis. Returns condition, severity (None/Mild/Moderate/"
+                "Severe/Proliferative), confidence score, a list of specific findings, "
+                "and a clinical recommendation. Always call this tool first before "
+                "any other tool."
             ),
             "parameters": {
                 "type": "object",
@@ -107,25 +139,16 @@ TOOLS = [
         "function": {
             "name": "run_segmentation",
             "description": (
-                "Run PaliGemma 2 to locate and segment specific lesions or "
-                "structures in the retinal image. Only call after run_diagnosis "
-                "has returned abnormal findings. The query must be a specific "
-                "pathology name from the diagnosis (e.g. 'cotton wool spots', "
-                "'microaneurysms'), not the user's original question."
+                "Run PaliGemma 2 to detect optic disc and optic cup bounding boxes "
+                "from the retinal fundus image. "
+                "Call this whenever the question asks about: optic disc, optic cup, "
+                "cup-to-disc ratio, CDR, glaucoma, disc cupping, or neuroretinal rim. "
+                "Must be called after run_diagnosis and before finish."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "Specific lesion or anatomical structure to segment, "
-                            "derived from diagnosis findings "
-                            "(e.g. 'cotton wool spots', 'optic disc edema')."
-                        ),
-                    }
-                },
-                "required": ["query"],
+                "properties": {},
+                "required": [],
             },
         },
     },
@@ -134,8 +157,10 @@ TOOLS = [
         "function": {
             "name": "finish",
             "description": (
-                "Signal that the analysis workflow is complete. Call this after "
-                "all necessary agents have been invoked."
+                "Signal that the analysis workflow is complete and all required "
+                "tools have been called. MedGemma will then produce a final "
+                "clinical narrative summarising all outputs. Always call this "
+                "as the last step."
             ),
             "parameters": {
                 "type": "object",
@@ -152,6 +177,12 @@ _TOOL_TO_ROUTE: dict[str, str] = {
     "run_segmentation": "analyze_location",
     "finish": "analyze_diagnosis",
 }
+
+
+def _needs_segmentation(question: str) -> bool:
+    """Return True if the question requires PaliGemma segmentation."""
+    q = question.lower()
+    return any(kw in q for kw in _SEGMENTATION_KEYWORDS)
 
 
 async def _call_functiongemma(messages: list[dict]) -> dict:
@@ -197,15 +228,15 @@ async def run_agentic_loop(
     answer or calls the 'finish' tool.
 
     Args:
-        question:           The clinician's question.
-        image_description:  Pre-scanned image description from the prescanner.
-        run_diagnosis_cb:   Async callback that runs MedGemma diagnosis;
-                            emits medgemma_start / medgemma_complete internally.
-        run_segmentation_cb: Async callback(query: str) that runs PaliGemma 2
-                            segmentation; emits paligemma_start / paligemma_complete
-                            internally.
-        emit:               Async SSE emit callback — called as
-                            await emit(event: str, message: str).
+        question:             The clinician's question.
+        image_description:    Pre-scanned image description from the prescanner.
+        run_diagnosis_cb:     Async callback that runs MedGemma diagnosis;
+                              emits medgemma_start / medgemma_complete internally.
+        run_segmentation_cb:  Async callback(query: str) that runs PaliGemma 2
+                              segmentation; emits paligemma_start / paligemma_complete
+                              internally.
+        emit:                 Async SSE emit callback — called as
+                              await emit(event: str, message: str).
 
     Returns:
         Dict with keys:
@@ -241,7 +272,7 @@ async def run_agentic_loop(
         await emit("route_decided", "Route: analyze_location")
 
         location: dict | None = None
-        seg_query = question.strip() or "lesions"
+        seg_query = "detect optic-disc ; optic-cup"  # fixed prompt PaliGemma was fine-tuned on
         try:
             location = await run_segmentation_cb(seg_query)
         except Exception as exc:
@@ -277,11 +308,12 @@ async def run_agentic_loop(
 
         # ----------------------------------------------------------------
         # No tool calls → FunctionGemma answered in plain text.
-        # If we still have nudge budget AND haven't run diagnosis yet,
-        # push a reminder and retry rather than accepting the bare text.
+        # Phase 1 (pre-diagnosis): nudge toward run_diagnosis.
+        # Phase 2 (post-diagnosis, CDR question): nudge toward run_segmentation.
         # ----------------------------------------------------------------
         if not tool_calls:
             if diagnosis is None and nudge_count < MAX_NUDGE_RETRIES:
+                # Phase 1 nudge: diagnosis hasn't run yet.
                 nudge_count += 1
                 logger.warning(
                     "FunctionGemma returned text without calling a tool "
@@ -290,20 +322,40 @@ async def run_agentic_loop(
                     nudge_count,
                     MAX_NUDGE_RETRIES,
                 )
-                # Append the bare assistant reply so the history is valid,
-                # then add a hard user-role nudge to force a tool call.
                 if text_content:
                     messages.append({"role": "assistant", "content": text_content})
                 messages.append({"role": "user", "content": _NUDGE_MESSAGE})
                 continue  # retry this iteration slot
 
-            # Out of nudge budget or diagnosis already ran → accept text exit.
+            if (
+                diagnosis is not None
+                and location is None
+                and _needs_segmentation(question)
+                and nudge_count < MAX_NUDGE_RETRIES
+            ):
+                # Phase 2 nudge: diagnosis ran but segmentation was skipped for
+                # a CDR / optic-disc related question.
+                nudge_count += 1
+                logger.warning(
+                    "FunctionGemma skipped run_segmentation for a CDR question "
+                    "(iteration %d, nudge %d/%d). Injecting segmentation reminder.",
+                    iteration + 1,
+                    nudge_count,
+                    MAX_NUDGE_RETRIES,
+                )
+                if text_content:
+                    messages.append({"role": "assistant", "content": text_content})
+                messages.append({"role": "user", "content": _NUDGE_SEGMENTATION_MESSAGE})
+                continue  # retry this iteration slot
+
+            # Out of nudge budget or no segmentation required → accept text exit.
             final_text = text_content
             logger.info(
                 "FunctionGemma returned text (no tool calls). "
-                "nudge_count=%d diagnosis_done=%s. Exiting loop.",
+                "nudge_count=%d diagnosis_done=%s segmentation_done=%s. Exiting loop.",
                 nudge_count,
                 diagnosis is not None,
+                location is not None,
             )
             break
 
@@ -330,46 +382,57 @@ async def run_agentic_loop(
                 logger.info("Route decided: %s", route_name)
                 route_decided_emitted = True
 
+            # ----------------------------------------------------------
             if fn_name == "finish":
                 should_finish = True
                 tool_results.append({"name": "finish", "response": "Analysis complete."})
 
+            # ----------------------------------------------------------
             elif fn_name == "run_diagnosis":
                 try:
                     diagnosis = await run_diagnosis_cb()
                     tool_results.append({
                         "name": "run_diagnosis",
-                        "response": json.dumps(diagnosis),  # must be string, not dict
+                        "response": json.dumps(diagnosis),
                     })
                 except Exception as exc:
                     logger.error("run_diagnosis_cb raised: %s", exc)
-                    # Use a plain string so FunctionGemma's chat template can
-                    # format the tool turn correctly. A nested dict in the error
-                    # path causes a 400 on the subsequent Ollama call.
                     tool_results.append({
                         "name": "run_diagnosis",
                         "response": f"Tool execution failed: {exc}",
                     })
 
+            # ----------------------------------------------------------
             elif fn_name == "run_segmentation":
-                query: str = fn_args.get("query", question)
+                # PaliGemma 2 is fine-tuned specifically for this prompt.
+                # The tool takes no arguments — the prompt is always fixed.
+                query: str = "detect optic-disc ; optic-cup"
                 try:
                     location = await run_segmentation_cb(query)
+                    detections_out = location.get("detections", [])
+                    # Log raw output and labels to aid debugging label parsing
+                    raw_out = location.get("raw_output", "")[:200]
+                    labels_found = [d.get("label", "<empty>") for d in detections_out]
+                    logger.info(
+                        "PaliGemma detections=%d  labels=%s  raw_output=%r",
+                        len(detections_out), labels_found, raw_out,
+                    )
                     tool_results.append({
                         "name": "run_segmentation",
-                        "response": json.dumps({  # must be string, not dict
+                        "response": json.dumps({
                             "summary": location.get("summary", ""),
-                            "detections_count": len(location.get("detections", [])),
+                            "detections_count": len(detections_out),
+                            "detections": detections_out,
                         }),
                     })
                 except Exception as exc:
                     logger.error("run_segmentation_cb raised: %s", exc)
-                    # Same reason: plain string keeps the tool message valid.
                     tool_results.append({
                         "name": "run_segmentation",
                         "response": f"Tool execution failed: {exc}",
                     })
 
+            # ----------------------------------------------------------
             else:
                 logger.warning("FunctionGemma called unknown tool: %s", fn_name)
                 tool_results.append({

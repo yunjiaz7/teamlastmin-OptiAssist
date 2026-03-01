@@ -135,16 +135,13 @@ async def run_pipeline(
         except Exception as exc:
             raise RuntimeError(f"PaliGemma segmentation failed: {exc}") from exc
         n = len(result.get("detections", []))
-        # Strip the data URI prefix so the frontend can re-attach it
-        raw_b64 = result.get("annotated_image_base64", "")
-        if raw_b64.startswith("data:image/png;base64,"):
-            raw_b64 = raw_b64[len("data:image/png;base64,"):]
+        raw_output = result.get("raw_output", "")
         await emit(
             "paligemma_complete",
             json.dumps({
                 "text": f"Found {n} regions of interest",
                 "segmentation": {
-                    "annotated_image_base64": raw_b64,
+                    "raw_output": raw_output,
                     "detection_count": n,
                 },
             }),
@@ -179,8 +176,10 @@ async def run_pipeline(
 
     # -------------------------------------------------------------------------
     # Stage 4 — Merge results
+    # PaliGemma detections + MedGemma diagnosis are passed directly to MedGemma
+    # for the final clinical narrative summary.
     # -------------------------------------------------------------------------
-    await emit("merging", "Combining results...")
+    await emit("merging", "MedGemma summarising all results...")
     try:
         from agents.merger import merge_results
         final = await merge_results(location, diagnosis, question)

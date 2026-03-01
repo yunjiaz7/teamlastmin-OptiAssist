@@ -14,7 +14,7 @@ interface DiagnosisData {
 }
 
 interface SegmentationData {
-  annotated_image_base64?: string
+  raw_output?: string
   detection_count?: number
 }
 
@@ -40,7 +40,6 @@ interface AnalysisResult {
   findings?: string[]
   recommendation?: string
   disclaimer?: string
-  annotated_image_base64?: string
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -168,11 +167,16 @@ function PaliGemmaSegmentationCard({ data }: { data: SegmentationData }) {
       }}
     >
       <span className="text-[11px] font-semibold uppercase tracking-widest text-[#A855F7]">
-        📍 PaliGemma Segmentation
+        📍 PaliGemma Detection
       </span>
       <p className="text-[13px] text-foreground/80">
         {data.detection_count ?? 0} region{(data.detection_count ?? 0) !== 1 ? "s" : ""} of interest detected
       </p>
+      {data.raw_output && (
+        <p className="font-mono text-[11px] text-foreground/60 break-all leading-relaxed">
+          {data.raw_output}
+        </p>
+      )}
     </div>
   )
 }
@@ -627,7 +631,6 @@ export default function DemoPage() {
                   )}
                 </div>
               )}
-
 
               {/* Diagnosis Card */}
               {result && (result.condition || result.findings) && (
