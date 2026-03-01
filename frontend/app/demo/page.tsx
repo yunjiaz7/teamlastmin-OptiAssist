@@ -6,11 +6,31 @@ import Link from "next/link"
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000"
 
+interface DiagnosisData {
+  condition?: string
+  severity?: string
+  findings?: string[]
+  recommendation?: string
+}
+
+interface SegmentationData {
+  raw_output?: string
+  detection_count?: number
+}
+
+interface SummaryData {
+  summary: string
+  disclaimer?: string
+}
+
 interface ProcessingStep {
   event: string
   message: string
   timestamp: string
   status: "complete" | "processing" | "error"
+  diagnosisData?: DiagnosisData
+  segmentationData?: SegmentationData
+  summaryData?: SummaryData
 }
 
 interface AnalysisResult {
@@ -20,7 +40,6 @@ interface AnalysisResult {
   findings?: string[]
   recommendation?: string
   disclaimer?: string
-  annotated_image_base64?: string
 }
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -35,6 +54,156 @@ const ROUTE_COLORS: Record<string, string> = {
   Segmentation: "bg-sky-500/10 text-sky-400",
   Diagnosis: "bg-emerald-500/10 text-emerald-400",
   "Full Analysis": "bg-violet-500/10 text-violet-400",
+}
+
+interface RouteDecisionInfo {
+  explanation: string
+  agents: string[]
+}
+
+const ROUTE_DECISION_CONFIG: Record<string, RouteDecisionInfo> = {
+  analyze_location: {
+    explanation:
+      "Structural anomaly detected in image. Routing to PaliGemma 2 segmentation expert to locate regions of interest.",
+    agents: ["PaliGemma 2"],
+  },
+  analyze_diagnosis: {
+    explanation:
+      "Clinical diagnosis query detected. Routing to MedGemma diagnostic expert for disease classification and severity assessment.",
+    agents: ["MedGemma 4B"],
+  },
+  analyze_full: {
+    explanation:
+      "Complex query requiring full analysis. Spawning both segmentation and diagnostic agents in parallel.",
+    agents: ["PaliGemma 2", "MedGemma 4B"],
+  },
+}
+
+function AgentDecisionCard({ message }: { message: string }) {
+  const routeKey = message.split(": ")[1]?.trim() ?? ""
+  const info = ROUTE_DECISION_CONFIG[routeKey]
+
+  return (
+    <div
+      className="agent-fade-in my-1 rounded-xl border-l-2 border-[#4ADE80] px-4 py-3 flex flex-col gap-2"
+      style={{ background: "rgba(74,222,128,0.05)", border: "1px solid rgba(74,222,128,0.15)", borderLeft: "2px solid #4ADE80" }}
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-widest text-[#4ADE80]">
+        🤖 Agent Decision
+      </span>
+      <p className="text-[13px] leading-snug text-foreground/85">
+        {info?.explanation ?? `Routing to: ${routeKey}`}
+      </p>
+      {info && info.agents.length > 0 && (
+        <div className="flex flex-wrap gap-2 mt-0.5">
+          {info.agents.map((agent) => (
+            <span
+              key={agent}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 font-mono text-[11px] font-medium text-[#4ADE80]"
+              style={{ background: "rgba(74,222,128,0.1)", border: "1px solid rgba(74,222,128,0.2)" }}
+            >
+              → {agent}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MedGemmaDiagnosisCard({ data }: { data: DiagnosisData }) {
+  return (
+    <div
+      className="agent-fade-in my-1 rounded-xl px-4 py-3 flex flex-col gap-2"
+      style={{
+        background: "rgba(96,165,250,0.05)",
+        border: "1px solid rgba(96,165,250,0.18)",
+        borderLeft: "2px solid #60A5FA",
+      }}
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-widest text-[#60A5FA]">
+        🔬 MedGemma Diagnosis
+      </span>
+      {data.condition && (
+        <p className="text-[14px] font-bold text-foreground leading-snug">
+          {data.condition}
+        </p>
+      )}
+      {data.severity && (
+        <span
+          className={`inline-block w-fit px-2 py-0.5 rounded-md font-mono text-[11px] font-medium ${
+            SEVERITY_COLORS[data.severity] ?? "bg-[rgba(255,255,255,0.06)] text-muted-foreground"
+          }`}
+        >
+          {data.severity}
+        </span>
+      )}
+      {data.findings && data.findings.length > 0 && (
+        <ul className="flex flex-col gap-1 pl-3 mt-0.5">
+          {data.findings.map((f, i) => (
+            <li key={i} className="list-disc text-[12px] text-foreground/70 leading-relaxed">
+              {f}
+            </li>
+          ))}
+        </ul>
+      )}
+      {data.recommendation && (
+        <p className="italic text-[12px] text-foreground/50 leading-relaxed">
+          {data.recommendation}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function PaliGemmaSegmentationCard({ data }: { data: SegmentationData }) {
+  return (
+    <div
+      className="agent-fade-in my-1 rounded-xl px-4 py-3 flex flex-col gap-2"
+      style={{
+        background: "rgba(168,85,247,0.05)",
+        border: "1px solid rgba(168,85,247,0.18)",
+        borderLeft: "2px solid #A855F7",
+      }}
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-widest text-[#A855F7]">
+        📍 PaliGemma Detection
+      </span>
+      <p className="text-[13px] text-foreground/80">
+        {data.detection_count ?? 0} region{(data.detection_count ?? 0) !== 1 ? "s" : ""} of interest detected
+      </p>
+      {data.raw_output && (
+        <p className="font-mono text-[11px] text-foreground/60 break-all leading-relaxed">
+          {data.raw_output}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function FinalSummaryCard({ data }: { data: SummaryData }) {
+  return (
+    <div
+      className="agent-fade-in my-1 rounded-xl px-4 py-4 flex flex-col gap-3"
+      style={{
+        background: "rgba(74,222,128,0.04)",
+        border: "1px solid rgba(74,222,128,0.18)",
+        borderLeft: "2px solid #4ADE80",
+      }}
+    >
+      <span className="text-[11px] font-semibold uppercase tracking-widest text-[#4ADE80]">
+        📋 Final Summary
+      </span>
+      <p className="text-[15px] font-medium text-foreground/90 leading-relaxed">
+        {data.summary}
+      </p>
+      {data.disclaimer && (
+        <p className="border-t border-border pt-2 text-[11px] text-faint leading-relaxed">
+          ⚠️ {data.disclaimer}
+        </p>
+      )}
+    </div>
+  )
 }
 
 export default function DemoPage() {
@@ -134,6 +303,15 @@ export default function DemoPage() {
             const data = JSON.parse(jsonStr)
 
             if (data.event === "complete") {
+              // Extract summary from the merged result
+              const summaryData: SummaryData | undefined =
+                data.result?.result?.summary
+                  ? {
+                      summary: data.result.result.summary,
+                      disclaimer: data.result.result.disclaimer,
+                    }
+                  : undefined
+
               setSteps((prev) =>
                 prev.map((s) =>
                   s.status === "processing" ? { ...s, status: "complete" } : s
@@ -146,6 +324,7 @@ export default function DemoPage() {
                   message: "Analysis complete",
                   timestamp: new Date().toLocaleTimeString(),
                   status: "complete",
+                  summaryData,
                 },
               ])
               setResult(data.result ?? data)
@@ -160,6 +339,25 @@ export default function DemoPage() {
                 },
               ])
             } else {
+              // Try to parse structured data from JSON-encoded messages
+              let displayMessage: string = data.message ?? data.event ?? ""
+              let diagnosisData: DiagnosisData | undefined
+              let segmentationData: SegmentationData | undefined
+
+              if (data.event === "medgemma_complete" && data.message) {
+                try {
+                  const parsed = JSON.parse(data.message)
+                  displayMessage = parsed.text ?? displayMessage
+                  diagnosisData = parsed.diagnosis
+                } catch { /* leave as-is */ }
+              } else if (data.event === "paligemma_complete" && data.message) {
+                try {
+                  const parsed = JSON.parse(data.message)
+                  displayMessage = parsed.text ?? displayMessage
+                  segmentationData = parsed.segmentation
+                } catch { /* leave as-is */ }
+              }
+
               setSteps((prev) => {
                 const updated = prev.map((s) =>
                   s.status === "processing" ? { ...s, status: "complete" as const } : s
@@ -168,9 +366,11 @@ export default function DemoPage() {
                   ...updated,
                   {
                     event: data.event ?? data.step ?? "step",
-                    message: data.message ?? data.event ?? "",
+                    message: displayMessage,
                     timestamp: new Date().toLocaleTimeString(),
                     status: "processing",
+                    diagnosisData,
+                    segmentationData,
                   },
                 ]
               })
@@ -361,44 +561,74 @@ export default function DemoPage() {
                   <span className="mb-3 text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
                     Pipeline
                   </span>
-                  {steps.map((step, i) => (
-                    <div key={i} className="flex items-start gap-3 py-1.5">
-                      {step.status === "complete" ? (
-                        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
-                      ) : step.status === "error" ? (
-                        <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
-                      ) : (
-                        <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-amber-400" />
-                      )}
-                      <span
-                        className={`text-[13px] leading-snug ${
-                          step.status === "error"
-                            ? "text-destructive"
-                            : "text-foreground/80"
-                        }`}
-                      >
-                        {step.message}
-                      </span>
-                      <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
-                        {step.timestamp}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Annotated Image */}
-              {result?.annotated_image_base64 && (
-                <div className="glass-card rounded-2xl p-5 flex flex-col gap-3">
-                  <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
-                    Segmentation Result
-                  </span>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`data:image/png;base64,${result.annotated_image_base64}`}
-                    alt="Annotated retinal segmentation"
-                    className="w-full rounded-xl"
-                  />
+                  {steps.map((step, i) =>
+                    step.event === "route_decided" ? (
+                      <div key={i}>
+                        <AgentDecisionCard message={step.message} />
+                      </div>
+                    ) : step.event === "medgemma_complete" && step.diagnosisData ? (
+                      <div key={i}>
+                        <div className="flex items-center gap-3 py-1.5">
+                          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                          <span className="text-[13px] leading-snug text-foreground/80">
+                            {step.message}
+                          </span>
+                          <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
+                            {step.timestamp}
+                          </span>
+                        </div>
+                        <MedGemmaDiagnosisCard data={step.diagnosisData} />
+                      </div>
+                    ) : step.event === "paligemma_complete" && step.segmentationData ? (
+                      <div key={i}>
+                        <div className="flex items-center gap-3 py-1.5">
+                          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                          <span className="text-[13px] leading-snug text-foreground/80">
+                            {step.message}
+                          </span>
+                          <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
+                            {step.timestamp}
+                          </span>
+                        </div>
+                        <PaliGemmaSegmentationCard data={step.segmentationData} />
+                      </div>
+                    ) : step.event === "complete" && step.summaryData ? (
+                      <div key={i}>
+                        <div className="flex items-center gap-3 py-1.5">
+                          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                          <span className="text-[13px] leading-snug text-foreground/80">
+                            {step.message}
+                          </span>
+                          <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
+                            {step.timestamp}
+                          </span>
+                        </div>
+                        <FinalSummaryCard data={step.summaryData} />
+                      </div>
+                    ) : (
+                      <div key={i} className="flex items-start gap-3 py-1.5">
+                        {step.status === "complete" ? (
+                          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                        ) : step.status === "error" ? (
+                          <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                        ) : (
+                          <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-amber-400" />
+                        )}
+                        <span
+                          className={`text-[13px] leading-snug ${
+                            step.status === "error"
+                              ? "text-destructive"
+                              : "text-foreground/80"
+                          }`}
+                        >
+                          {step.message}
+                        </span>
+                        <span className="ml-auto shrink-0 font-mono text-[10px] text-faint">
+                          {step.timestamp}
+                        </span>
+                      </div>
+                    )
+                  )}
                 </div>
               )}
 

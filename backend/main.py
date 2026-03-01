@@ -6,12 +6,18 @@ main.py
 FastAPI application entry point for OptiAssist. Exposes a health check endpoint
 and a streaming /analyze endpoint that runs the full ophthalmology AI pipeline
 and pushes progress updates to the client via Server-Sent Events (SSE).
+
+PaliGemma 2 is preloaded at server startup (via the lifespan context) so the
+first /analyze request is not stalled by model loading.
 """
 
 import asyncio
 import json
 import logging
 import os
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 from dotenv import load_dotenv
@@ -26,7 +32,36 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="OptiAssist API")
+# Ensure project root is on sys.path so app.tools.paligemma_tool is importable
+_PROJECT_ROOT = Path(__file__).parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+_PALIGEMMA_ADAPTER_DIR = (
+    Path(__file__).parent
+    / "models"
+    / "paligemma2-finetuned"
+    / "finetuned_paligemma2_det_lora"
+    / "final"
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Preload PaliGemma 2 at startup so the first request isn't slow."""
+    logger.info("Startup: preloading PaliGemma 2 model from %s", _PALIGEMMA_ADAPTER_DIR)
+    try:
+        import asyncio as _asyncio
+        from app.tools.paligemma_tool import _load_model_and_processor
+        await _asyncio.to_thread(_load_model_and_processor, _PALIGEMMA_ADAPTER_DIR)
+        logger.info("Startup: PaliGemma 2 model loaded and cached.")
+    except Exception as exc:
+        logger.warning("Startup: PaliGemma 2 preload failed (will load on first request): %s", exc)
+    yield
+    # Shutdown — nothing to clean up (model lives in process memory)
+
+
+app = FastAPI(title="OptiAssist API", lifespan=lifespan)
 
 # Allow all origins so the local Next.js dev server can reach this API
 app.add_middleware(

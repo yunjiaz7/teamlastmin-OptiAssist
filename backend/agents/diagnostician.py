@@ -19,21 +19,66 @@ from transformers import pipeline
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = "./models/medgemma-finetuned"
+# ---------------------------------------------------------------------------
+# Model source configuration
+#
+# Option A — Use your own local fine-tuned model:
+#   Set USE_LOCAL_MODEL = True and place the model under:
+#   backend/models/medgemma-finetuned/
+#
+# Option B — Use the official HuggingFace model (auto-downloaded):
+#   Set USE_LOCAL_MODEL = False
+#   Model ID: google/medgemma-4b-it
+#   Note: requires HuggingFace login and license agreement.
+# ---------------------------------------------------------------------------
+USE_LOCAL_MODEL = False
 
+_LOCAL_MODEL_PATH = Path(__file__).parent.parent / "models" / "medgemma-finetuned"
+_HF_MODEL_ID = "google/medgemma-4b-it"
+
+if USE_LOCAL_MODEL:
+    if not _LOCAL_MODEL_PATH.exists():
+        raise FileNotFoundError(
+            f"Local MedGemma model not found at '{_LOCAL_MODEL_PATH}'. "
+            "Please place the fine-tuned model files in that directory, "
+            "or set USE_LOCAL_MODEL = False to use the HuggingFace model."
+        )
+    MODEL_PATH = str(_LOCAL_MODEL_PATH)
+    logger.info("Using local MedGemma model from %s", MODEL_PATH)
+else:
+    MODEL_PATH = _HF_MODEL_ID
+    logger.info("Using HuggingFace MedGemma model: %s", MODEL_PATH)
+
+# ---------------------------------------------------------------------------
+# MedGemma is Google's general-purpose medical AI model (medgemma-4b-it).
+# It is a multimodal model that can analyze medical images and answer
+# clinical questions across medicine. Here it is applied to retinal fundus
+# images as part of the OptiAssist ophthalmology pipeline.
+# ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are an expert ophthalmology AI assistant. "
-    "Analyze the retinal image and answer the clinical question. "
-    "Always respond with valid JSON only, no extra text. "
-    "JSON fields required:\n"
-    "  condition: string (disease name or 'Normal')\n"
-    "  severity: string (None/Mild/Moderate/Severe/Proliferative)\n"
-    "  severity_level: integer 0-4\n"
-    "  confidence: float 0.0-1.0\n"
-    "  findings: list of strings (specific observations)\n"
-    "  recommendation: string (follow-up advice)\n"
-    "  disclaimer: always set to "
-    "'For research use only. Not intended for clinical diagnosis.'"
+    "You are MedGemma, a general-purpose medical AI model developed by Google. "
+    "You are being used to analyze a retinal fundus image and answer a clinical question.\n\n"
+    "CRITICAL INSTRUCTION: Your response must be ONLY a valid JSON object. "
+    "Do NOT include any explanation, preamble, markdown, or text outside the JSON. "
+    "Your response must start with { and end with }.\n\n"
+    "Required JSON fields:\n"
+    "  condition: string (diagnosed condition, e.g. 'Glaucoma', 'Diabetic Retinopathy', "
+    "'Age-related Macular Degeneration', or 'Normal')\n"
+    "  severity: string — one of: 'None', 'Mild', 'Moderate', 'Severe', 'Proliferative'\n"
+    "  severity_level: integer 0–4  (0=None, 1=Mild, 2=Moderate, 3=Severe, 4=Proliferative)\n"
+    "  confidence: float 0.0–1.0\n"
+    "  findings: list of strings — specific observable findings "
+    "(e.g. 'increased cup-to-disc ratio', 'optic disc cupping', 'microaneurysms', "
+    "'hard exudates', 'neovascularisation')\n"
+    "  recommendation: string — clinical follow-up advice\n"
+    "  disclaimer: string — always exactly: "
+    "'For research use only. Not intended for clinical diagnosis.'\n\n"
+    "Example response:\n"
+    '{"condition": "Glaucoma", "severity": "Moderate", "severity_level": 2, '
+    '"confidence": 0.82, '
+    '"findings": ["increased cup-to-disc ratio", "optic disc cupping", "neuroretinal rim thinning"], '
+    '"recommendation": "Refer to glaucoma specialist for IOP measurement and visual field testing.", '
+    '"disclaimer": "For research use only. Not intended for clinical diagnosis."}'
 )
 
 FALLBACK_RESULT = {
@@ -49,13 +94,6 @@ FALLBACK_RESULT = {
 # ---------------------------------------------------------------------------
 # Model loading — happens once at module level to avoid per-call overhead
 # ---------------------------------------------------------------------------
-_model_path = Path(MODEL_PATH)
-if not _model_path.exists():
-    raise FileNotFoundError(
-        f"MedGemma model not found at '{MODEL_PATH}'. "
-        "Please download or fine-tune the model and place it at that path."
-    )
-
 logger.info("Loading MedGemma pipeline from %s", MODEL_PATH)
 pipe = pipeline("image-text-to-text", model=MODEL_PATH)
 logger.info("MedGemma pipeline loaded successfully.")
@@ -66,23 +104,45 @@ def _run_inference(messages: list[dict]) -> str:
     Execute blocking MedGemma pipeline inference synchronously.
 
     Args:
-        messages: Chat-formatted message list with system and user turns.
+        messages: Chat-formatted message list. All content fields must be
+            list-of-dicts (never a plain string) so that Gemma3Processor's
+            apply_chat_template can iterate over them without hitting
+            "string indices must be integers".
 
     Returns:
         Raw text content of the model's last response turn.
     """
     output = pipe(text=messages, max_new_tokens=512)
-    raw_text: str = output[0]["generated_text"][-1]["content"]
-    return raw_text
+    generated = output[0]["generated_text"]
+
+    if isinstance(generated, list):
+        # Standard chat format: list of {"role": ..., "content": ...} dicts.
+        # The last element is the model's assistant turn.
+        last = generated[-1]
+        if isinstance(last, dict):
+            content = last.get("content")
+            if isinstance(content, list):
+                # List-format content: [{"type": "text", "text": "..."}].
+                # Extract and concatenate all text parts.
+                return "".join(
+                    item.get("text", "")
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ) or str(last)
+            return str(content) if content else str(last)
+        return str(last)
+
+    # Plain string — the pipeline returned the completion text directly.
+    return str(generated)
 
 
 def _parse_json(raw_text: str) -> dict:
     """
     Parse a JSON dict from the model's raw output string.
 
-    Tries strict json.loads first; if that fails, falls back to extracting
-    the substring between the first '{' and last '}' before retrying.
-    Returns FALLBACK_RESULT if both attempts fail.
+    MedGemma sometimes wraps its JSON in natural language or markdown code
+    fences.  We try three progressively looser extraction strategies before
+    giving up and returning FALLBACK_RESULT.
 
     Args:
         raw_text: The raw string output from the MedGemma pipeline.
@@ -90,13 +150,16 @@ def _parse_json(raw_text: str) -> dict:
     Returns:
         Parsed diagnosis dict, or FALLBACK_RESULT on failure.
     """
-    # Attempt 1: direct parse (model followed instructions and returned clean JSON)
+    import re
+
+    # Attempt 1: the model returned clean JSON with no surrounding text.
     try:
-        return json.loads(raw_text)
+        return json.loads(raw_text.strip())
     except json.JSONDecodeError:
         pass
 
-    # Attempt 2: extract the outermost JSON object from the string
+    # Attempt 2: extract the outermost { … } substring.
+    # Handles "Here is my analysis: {…}" style outputs.
     start = raw_text.find("{")
     end = raw_text.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -105,8 +168,86 @@ def _parse_json(raw_text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("JSON parsing failed for model output. Returning fallback result.")
+    # Attempt 3: strip markdown code fences (```json … ``` or ``` … ```).
+    # Handles cases where the model wraps JSON in a code block.
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw_text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(
+        "JSON parsing failed after 3 attempts. Raw output (first 400 chars): %s",
+        raw_text[:400],
+    )
     return FALLBACK_RESULT
+
+
+_SUMMARY_SYSTEM_PROMPT = (
+    "You are MedGemma, a general-purpose medical AI model developed by Google. "
+    "Your task is to synthesize structured ophthalmology analysis results into a "
+    "clear, concise clinical narrative. Write in plain prose — do NOT output JSON. "
+    "Do NOT repeat the disclaimer."
+)
+
+_SUMMARY_USER_TEMPLATE = (
+    "Summarize the following retinal analysis results in 2–4 sentences suitable "
+    "for a clinician. Include the diagnosis, key findings, any cup-to-disc ratio "
+    "measurements with their clinical interpretation, and an overall impression.\n\n"
+    "Clinical question: {question}\n\n"
+    "Analysis results:\n{context}"
+)
+
+
+async def summarize_with_medgemma(context: str, question: str = "") -> str:
+    """
+    Generate a clinical narrative summary of all pipeline results using MedGemma
+    (text-only — no image required for this step).
+
+    MedGemma synthesises the diagnosis, segmentation detections, and cup-to-disc
+    ratio metrics into a 2–4 sentence paragraph suitable for a clinician.
+
+    Args:
+        context:  Plain-text string describing all pipeline results
+                  (built by merger._build_context).
+        question: The original clinical question (optional, improves relevance).
+
+    Returns:
+        A concise clinical narrative string generated by MedGemma, or the raw
+        context string if MedGemma inference fails.
+    """
+    user_text = _SUMMARY_USER_TEMPLATE.format(
+        question=question or "General retinal assessment",
+        context=context,
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": _SUMMARY_SYSTEM_PROMPT}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": user_text}],
+        },
+    ]
+
+    logger.info("Running MedGemma summarization. context_len=%d", len(context))
+    try:
+        raw_text = await asyncio.to_thread(_run_inference, messages)
+    except Exception as e:
+        logger.warning("MedGemma summarization failed: %s. Returning raw context.", e)
+        return context
+
+    summary = raw_text.strip()
+    # If the model accidentally returned JSON, fall back to the raw context
+    if summary.startswith("{") or summary.startswith("["):
+        logger.warning("MedGemma returned JSON instead of prose for summary. Falling back.")
+        return context
+
+    logger.info("MedGemma summary length=%d", len(summary))
+    return summary
 
 
 async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
@@ -131,18 +272,23 @@ async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
         except Exception as e:
             raise RuntimeError(f"Failed to decode image bytes into PIL Image: {e}") from e
 
-    # Build the user message, attaching the image when available
-    user_content: list[dict] | str
+    # Build the user message, attaching the image when available.
+    # IMPORTANT: all content fields MUST be list-of-dicts (never a plain string).
+    # The Gemma3Processor.apply_chat_template does:
+    #   visuals = [c for c in message["content"] if c["type"] in ["image","video"]]
+    # If content is a plain string, iterating over it yields characters, and
+    # character["type"] raises "string indices must be integers".
+    user_content: list[dict]
     if pil_image is not None:
         user_content = [
             {"type": "image", "image": pil_image},
             {"type": "text", "text": query},
         ]
     else:
-        user_content = query
+        user_content = [{"type": "text", "text": query}]
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
         {"role": "user", "content": user_content},
     ]
 
@@ -154,7 +300,7 @@ async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
     except Exception as e:
         raise RuntimeError(f"MedGemma inference failed: {e}") from e
 
-    logger.debug("Raw MedGemma output: %s", raw_text[:200])
+    logger.info("Raw MedGemma output (first 400 chars): %s", raw_text[:400])
 
     result = _parse_json(raw_text)
     logger.info("Diagnosis complete. condition=%s severity=%s", result.get("condition"), result.get("severity"))

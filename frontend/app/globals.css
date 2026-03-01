@@ -83,6 +83,15 @@
   backdrop-filter: blur(12px);
 }
 
+/* Agent Decision Card fade-in */
+@keyframes agentFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.agent-fade-in {
+  animation: agentFadeIn 0.35s ease both;
+}
+
 /* Subtle glow */
 .glow-green {
   box-shadow: 0 0 60px -12px rgba(74, 222, 128, 0.15);

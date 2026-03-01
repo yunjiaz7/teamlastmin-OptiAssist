@@ -3,211 +3,144 @@ from __future__ import annotations
 """
 segmenter.py
 
-Runs PaliGemma 2 inference for retinal image segmentation. Accepts raw image
-bytes and a location query, returns detected anatomical regions with bounding
-boxes drawn on an annotated copy of the original image.
+PaliGemma 2 agent — detects optic disc and optic cup bounding boxes from a
+retinal fundus image.
 
-Mask decoding (from <seg> tokens) requires vae-oid.npz — coordinate with teammate.
-Until that asset is available, has_mask is always set to False.
+This agent uses a fine-tuned PaliGemma 2 (3B, LoRA-adapted) model that was
+specifically trained on the optic-disc / optic-cup detection task.  Given a
+fundus image it returns pixel-space bounding boxes for both structures, which
+are subsequently consumed by the cup-to-disc ratio metric tools.
+
+Model details
+-------------
+  Base model:  google/paligemma2-3b-pt-448
+  Adapter:     finetuned_paligemma2_det_lora  (LoRA, merged at inference time)
+  Task prompt: "detect optic-disc ; optic-cup"
+  Output:      <loc####> token sequences → parsed into {x_min, y_min, x_max, y_max}
+
+Agent role in the pipeline
+---------------------------
+  1. MedGemma runs a general medical diagnosis on the fundus image.
+  2. If the diagnosis involves the optic disc (e.g. glaucoma, cupping),
+     THIS agent is called to precisely locate the disc and cup.
+  3. The returned bounding boxes are fed into the CDR metric tools
+     (compute_vertical_cdr, compute_horizontal_cdr, compute_area_cdr, etc.).
 """
 
 import asyncio
-import base64
 import io
 import logging
-import os
-import re
+import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
-from transformers import AutoProcessor, PaliGemmaForConditionalGeneration
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-MODEL_PATH = "./models/paligemma2-finetuned"
-
 # ---------------------------------------------------------------------------
-# Model loading — happens once at module level to avoid per-call overhead
+# LoRA adapter path
+# Fine-tuned specifically for: "detect optic-disc ; optic-cup"
 # ---------------------------------------------------------------------------
-_model_path = Path(MODEL_PATH)
-if not _model_path.exists():
-    raise FileNotFoundError(
-        f"PaliGemma 2 model not found at '{MODEL_PATH}'. "
-        "Please download or fine-tune the model and place it at that path."
-    )
+_ADAPTER_DIR = (
+    Path(__file__).parent.parent
+    / "models"
+    / "paligemma2-finetuned"
+    / "finetuned_paligemma2_det_lora"
+    / "final"
+)
 
-logger.info("Loading PaliGemma 2 processor and model from %s", MODEL_PATH)
-processor = AutoProcessor.from_pretrained(MODEL_PATH)
-model = PaliGemmaForConditionalGeneration.from_pretrained(MODEL_PATH)
-logger.info("PaliGemma 2 loaded successfully.")
+# Make sure the project root is on sys.path so `app.tools.paligemma_tool`
+# can be imported from inside the backend package.
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-# Regex to capture all <loc####> tokens in sequence
-_LOC_PATTERN = re.compile(r"<loc(\d{4})>")
+# The detection prompt this LoRA was trained on — do not change.
+_DETECTION_PROMPT = "detect optic-disc ; optic-cup"
 
 
-def _run_inference(pil_image: Image.Image, prompt: str) -> str:
+def _run_inference_sync(image_bytes: bytes) -> dict:
     """
-    Execute blocking PaliGemma 2 inference synchronously.
+    Blocking wrapper — loads the model once (cached inside paligemma_tool)
+    then runs optic disc and optic cup detection.
+
+    Called via ``asyncio.to_thread`` so the event loop stays free.
 
     Args:
-        pil_image: PIL Image object of the retinal scan.
-        prompt: Text prompt for the model (e.g. "segment optic disc\\n").
+        image_bytes: Raw bytes of the input fundus image.
 
     Returns:
-        Raw decoded output string including special tokens.
+        Raw result dict from run_paligemma_detection.
     """
-    inputs = processor(text=prompt, images=pil_image, return_tensors="pt")
-    outputs = model.generate(**inputs, max_new_tokens=256)
-    raw_output = processor.decode(outputs[0], skip_special_tokens=False)
-    return raw_output
+    import os
+    import tempfile
 
+    from app.tools.paligemma_tool import run_paligemma_detection
 
-def _parse_detections(raw_output: str, img_width: int, img_height: int) -> list[dict]:
-    """
-    Parse <loc####> tokens from raw PaliGemma output into structured detections.
+    # paligemma_tool expects a file path — write bytes to a temp file.
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
 
-    PaliGemma encodes bounding boxes as four consecutive <loc####> tokens in the
-    order: y_min, x_min, y_max, x_max. Each token value is in [0, 1023] and must
-    be scaled to the actual image dimensions.
-
-    Args:
-        raw_output: Full decoded model output string with special tokens intact.
-        img_width:  Width of the original image in pixels.
-        img_height: Height of the original image in pixels.
-
-    Returns:
-        List of detection dicts, each containing label, bounding_box, and has_mask.
-    """
-    loc_tokens = _LOC_PATTERN.findall(raw_output)
-    detections = []
-
-    # Group loc tokens in blocks of 4; anything left over is incomplete and skipped
-    for i in range(0, len(loc_tokens) - 3, 4):
-        y_min_raw, x_min_raw, y_max_raw, x_max_raw = (int(loc_tokens[i + j]) for j in range(4))
-
-        y_min = int((y_min_raw / 1024) * img_height)
-        x_min = int((x_min_raw / 1024) * img_width)
-        y_max = int((y_max_raw / 1024) * img_height)
-        x_max = int((x_max_raw / 1024) * img_width)
-
-        # Attempt to extract a label string following the 4th loc token in the raw text
-        after_locs = re.split(r"(?:<loc\d{4}>){4}", raw_output)
-        label_text = ""
-        label_idx = i // 4 + 1
-        if label_idx < len(after_locs):
-            # Take only the first word/phrase before the next special token
-            label_candidate = re.split(r"<", after_locs[label_idx])[0].strip()
-            label_text = label_candidate if label_candidate else f"region_{label_idx}"
-
-        # <seg> tokens indicate mask availability; decoding requires vae-oid.npz (TBD)
-        has_mask = False
-
-        detections.append(
-            {
-                "label": label_text or f"region_{i // 4 + 1}",
-                "confidence": 0.9,
-                "bounding_box": {
-                    "x_min": x_min,
-                    "y_min": y_min,
-                    "x_max": x_max,
-                    "y_max": y_max,
-                },
-                "has_mask": has_mask,
-            }
+    try:
+        result = run_paligemma_detection(
+            image_path=tmp_path,
+            query_context=_DETECTION_PROMPT,
+            max_new_tokens=128,
+            adapter_dir=_ADAPTER_DIR,
         )
+    finally:
+        os.unlink(tmp_path)
 
-    return detections
+    return result
 
 
-def _draw_boxes(pil_image: Image.Image, detections: list[dict]) -> str:
+async def run_segmentation(image_bytes: bytes, query: str = _DETECTION_PROMPT) -> dict:
     """
-    Draw red bounding boxes on the image and encode it as a base64 PNG data URI.
+    Detect optic disc and optic cup bounding boxes in a retinal fundus image
+    using the fine-tuned PaliGemma 2 model.
+
+    The ``query`` parameter is accepted for API compatibility but is always
+    overridden with the fixed detection prompt the model was fine-tuned on
+    (``"detect optic-disc ; optic-cup"``).  Do not pass arbitrary lesion names —
+    this model was not trained for general-purpose lesion detection.
 
     Args:
-        pil_image:  Original PIL Image to annotate.
-        detections: List of detection dicts produced by _parse_detections().
-
-    Returns:
-        Base64-encoded PNG string prefixed with the data URI scheme.
-    """
-    annotated = pil_image.copy()
-    draw = ImageDraw.Draw(annotated)
-
-    for det in detections:
-        box = det["bounding_box"]
-        draw.rectangle(
-            [box["x_min"], box["y_min"], box["x_max"], box["y_max"]],
-            outline="red",
-            width=2,
-        )
-
-    buffer = io.BytesIO()
-    annotated.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{encoded}"
-
-
-def _build_summary(detections: list[dict]) -> str:
-    """
-    Produce a human-readable summary of detected regions.
-
-    Args:
-        detections: List of detection dicts.
-
-    Returns:
-        A plain-text summary string.
-    """
-    if not detections:
-        return "No regions detected."
-
-    labels = [d["label"] for d in detections]
-    label_phrases = ", ".join(f"{lbl} in region" for lbl in labels)
-    return f"{len(detections)} regions detected: {label_phrases}"
-
-
-async def run_segmentation(image_bytes: bytes, query: str) -> dict:
-    """
-    Segment anatomical structures in a retinal image using PaliGemma 2.
-
-    Args:
-        image_bytes: Raw bytes of the input retinal image.
-        query: Location query describing what to segment (e.g. "optic disc").
+        image_bytes: Raw bytes of the input retinal fundus image (JPEG/PNG).
+        query:       Ignored — the model always uses its fine-tuned prompt.
 
     Returns:
         A dict with keys:
-            "detections"            (list): Detected regions with labels and bounding boxes.
-            "annotated_image_base64" (str): Base64 PNG of the image with boxes drawn.
-            "summary"               (str): Human-readable detection summary.
+            ``"detections"``            (list[dict]): Each entry has
+                ``"label"`` (``"optic-disc"`` or ``"optic-cup"``) and
+                ``"bounding_box"`` (``{x_min, y_min, x_max, y_max}`` in pixels).
+            ``"annotated_image_base64"`` (str):  Base64 PNG with boxes drawn.
+            ``"raw_output"``            (str):  Raw <loc####> token string.
+            ``"summary"``               (str):  Human-readable detection summary.
 
     Raises:
-        RuntimeError: If inference or post-processing fails unexpectedly.
+        RuntimeError: If the image cannot be decoded or PaliGemma inference fails.
     """
     try:
-        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        pil = Image.open(io.BytesIO(image_bytes))
+        w, h = pil.size
     except Exception as e:
-        raise RuntimeError(f"Failed to decode image bytes into PIL Image: {e}") from e
+        raise RuntimeError(f"Failed to decode image: {e}") from e
 
-    img_width, img_height = pil_image.size
-    prompt = f"segment {query}\n"
-
-    logger.info("Running segmentation. query=%s image_size=%dx%d", query, img_width, img_height)
+    logger.info(
+        "PaliGemma 2 — detecting optic disc and cup. image=%dx%d prompt=%r",
+        w, h, _DETECTION_PROMPT,
+    )
 
     try:
-        # Offload blocking transformer inference to a thread so the event loop stays free
-        raw_output = await asyncio.to_thread(_run_inference, pil_image, prompt)
+        result = await asyncio.to_thread(_run_inference_sync, image_bytes)
     except Exception as e:
         raise RuntimeError(f"PaliGemma 2 inference failed: {e}") from e
 
-    logger.debug("Raw model output: %s", raw_output[:200])
-
-    detections = _parse_detections(raw_output, img_width, img_height)
-    annotated_image_base64 = _draw_boxes(pil_image, detections)
-    summary = _build_summary(detections)
-
-    logger.info("Segmentation complete. detections=%d", len(detections))
-
-    return {
-        "detections": detections,
-        "annotated_image_base64": annotated_image_base64,
-        "summary": summary,
-    }
+    detections = result.get("detections", [])
+    labels_found = [d.get("label", "") for d in detections]
+    logger.info(
+        "PaliGemma 2 done. detections=%d labels=%s",
+        len(detections), labels_found,
+    )
+    return result
