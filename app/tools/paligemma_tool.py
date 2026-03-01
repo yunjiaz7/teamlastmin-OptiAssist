@@ -29,7 +29,7 @@ from typing import Optional
 import torch
 from PIL import Image, ImageDraw
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForVision2Seq, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,7 @@ def _load_model_and_processor(adapter_dir: Path) -> tuple:
     # ----------------------------------------------------------------
     # 3. Base model + LoRA adapter
     # ----------------------------------------------------------------
-    base_model = AutoModelForCausalLM.from_pretrained(base_id, torch_dtype=torch.float32)
+    base_model = AutoModelForVision2Seq.from_pretrained(base_id, dtype=torch.float32)
     logger.info("Base model loaded.")
 
     model = PeftModel.from_pretrained(base_model, str(adapter_dir))

@@ -173,14 +173,6 @@ function PaliGemmaSegmentationCard({ data }: { data: SegmentationData }) {
       <p className="text-[13px] text-foreground/80">
         {data.detection_count ?? 0} region{(data.detection_count ?? 0) !== 1 ? "s" : ""} of interest detected
       </p>
-      {data.annotated_image_base64 && (
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img
-          src={`data:image/png;base64,${data.annotated_image_base64}`}
-          alt="Annotated segmentation"
-          className="w-full rounded-lg mt-1"
-        />
-      )}
     </div>
   )
 }
@@ -636,20 +628,6 @@ export default function DemoPage() {
                 </div>
               )}
 
-              {/* Annotated Image */}
-              {result?.annotated_image_base64 && (
-                <div className="glass-card rounded-2xl p-5 flex flex-col gap-3">
-                  <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-widest">
-                    Segmentation Result
-                  </span>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={`data:image/png;base64,${result.annotated_image_base64}`}
-                    alt="Annotated retinal segmentation"
-                    className="w-full rounded-xl"
-                  />
-                </div>
-              )}
 
               {/* Diagnosis Card */}
               {result && (result.condition || result.findings) && (
