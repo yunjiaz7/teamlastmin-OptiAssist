@@ -21,7 +21,7 @@ function TerminalWindow() {
         <span className="size-3 rounded-full bg-[#FEBC2E]" />
         <span className="size-3 rounded-full bg-[#28C840]" />
         <span className="ml-3 font-mono text-xs text-muted-foreground">
-          optiassist \u2014 pipeline
+          optiassist pipeline
         </span>
       </div>
       {/* Terminal body */}
