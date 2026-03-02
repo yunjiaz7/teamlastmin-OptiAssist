@@ -31,3 +31,36 @@
 - Frontend update in `frontend/app/demo/page.tsx`: `SegmentationData` now includes `annotated_image_base64` and `PaliGemmaSegmentationCard` renders that image in the pipeline panel.
 - Existing parsing path (`segmentationData = parsed.segmentation`) automatically picks up the new field, so no extra transform logic was needed.
 - Verification: `read_lints` run on edited files (`frontend/app/demo/page.tsx`, `backend/orchestrator.py`, `tasks/todo.md`) reports no linter errors.
+
+---
+
+## Landing page CTA copy update
+
+- [x] Locate the landing page CTA currently labeled "Try It Live".
+- [x] Update label text to "Try the Demo" without changing behavior.
+- [x] Run lints for edited frontend files and document result.
+
+## Review
+
+- Updated `frontend/components/hero.tsx` CTA copy from "Try It Live" to "Try the Demo" in the landing hero primary link.
+- Verification: `read_lints` on `frontend/components/hero.tsx` and `tasks/todo.md` reports no linter errors.
+
+---
+
+## Landing page content update (fine-tuning + hackathon context)
+
+- [x] Add landing page copy that PaliGemma 2 is fine-tuned on open-source retinal data.
+- [x] Add hackathon context: built for Google DeepMind X InstaLILY AI Hackathon 2026.
+- [x] Add achievement details: built from 0 to 1 in 8 hours, won 2nd prize.
+- [x] Run lints on edited landing page components and document result.
+
+## Review
+
+- Updated `frontend/components/tech-stack.tsx`:
+  - PaliGemma 2 model role now states it is fine-tuned on open-source retinal data.
+  - Architecture intro copy now explicitly mentions custom fine-tuning on open-source retinal datasets.
+- Updated `frontend/components/hero.tsx` with visible hackathon/achievement lines:
+  - Built for Google DeepMind X InstaLILY AI Hackathon 2026.
+  - Built from 0 to 1 in 8 hours and won 2nd Prize.
+- Updated `frontend/components/site-footer.tsx` to repeat hackathon context and achievement in footer metadata.
+- Verification: `read_lints` on edited files (`frontend/components/hero.tsx`, `frontend/components/tech-stack.tsx`, `frontend/components/site-footer.tsx`, `tasks/todo.md`) reports no linter errors.

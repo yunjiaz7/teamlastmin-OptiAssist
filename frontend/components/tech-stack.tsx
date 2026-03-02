@@ -1,6 +1,10 @@
 const models = [
   { name: "FunctionGemma", size: "270M", role: "Intelligent request routing" },
-  { name: "PaliGemma 2", size: "3B", role: "Retinal structure segmentation" },
+  {
+    name: "PaliGemma 2",
+    size: "3B",
+    role: "Retinal structure segmentation, fine-tuned on open-source retinal data",
+  },
   { name: "MedGemma", size: "4B", role: "Ophthalmological diagnosis" },
   { name: "Gemma 3", size: "4B", role: "Image understanding & synthesis" },
 ]
@@ -16,7 +20,9 @@ export function TechStack() {
           Powered By
         </h2>
         <p className="text-subtle text-base leading-relaxed sm:text-[17px]">
-          A pipeline of specialized on-device models, each optimized for a specific clinical task.
+          A pipeline of specialized on-device models, each optimized for a specific
+          clinical task. Our PaliGemma 2 is custom fine-tuned on open-source retinal
+          datasets for optic structure detection.
         </p>
       </div>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">

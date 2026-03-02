@@ -9,6 +9,12 @@ export function SiteFooter() {
           <p className="text-xs text-muted-foreground">
             On-Device AI for Ophthalmology
           </p>
+          <p className="text-xs text-muted-foreground">
+            Built for Google DeepMind X InstaLILY AI Hackathon 2026
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Built from 0 to 1 in 8 hours - 2nd Prize
+          </p>
         </div>
         <p className="text-[11px] text-faint">
           For research use only. Not intended for clinical diagnosis.

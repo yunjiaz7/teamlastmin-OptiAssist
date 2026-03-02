@@ -63,6 +63,10 @@ export function Hero({ onScrollToProblem }: { onScrollToProblem: () => void }) {
             Real-time retinal analysis powered by on-device models. Patient data never
             leaves the clinic. Zero cloud dependency.
           </p>
+          <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <p>Built for Google DeepMind X InstaLILY AI Hackathon 2026.</p>
+            <p>Built this system from 0 to 1 in 8 hours - won 2nd Prize.</p>
+          </div>
           <div className="flex items-center gap-3 pt-2">
             <button
               onClick={onScrollToProblem}
@@ -75,7 +79,7 @@ export function Hero({ onScrollToProblem }: { onScrollToProblem: () => void }) {
               href="/demo"
               className="flex items-center gap-2 bg-primary text-primary-foreground px-5 py-3 text-[13px] font-medium rounded-xl hover:brightness-110 transition-all duration-200 hover:shadow-[0_0_20px_-4px_rgba(74,222,128,0.4)]"
             >
-              Try It Live
+              Try the Demo
               <ArrowRight className="size-3.5" />
             </Link>
           </div>

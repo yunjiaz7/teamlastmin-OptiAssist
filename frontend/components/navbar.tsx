@@ -23,7 +23,7 @@ export function Navbar({ onScrollToProblem }: { onScrollToProblem: () => void })
             Why We Built This
           </button>
           <a
-            href="https://github.com"
+            href="https://github.com/yunjiaz7/teamlastmin-OptiAssist/tree/main"
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted-foreground hover:text-foreground transition-colors p-2 rounded-lg hover:bg-secondary"
