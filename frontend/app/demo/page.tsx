@@ -16,6 +16,7 @@ interface DiagnosisData {
 interface SegmentationData {
   raw_output?: string
   detection_count?: number
+  annotated_image_base64?: string
 }
 
 interface SummaryData {
@@ -172,6 +173,16 @@ function PaliGemmaSegmentationCard({ data }: { data: SegmentationData }) {
       <p className="text-[13px] text-foreground/80">
         {data.detection_count ?? 0} region{(data.detection_count ?? 0) !== 1 ? "s" : ""} of interest detected
       </p>
+      {data.annotated_image_base64 && (
+        <div className="overflow-hidden rounded-lg border border-[#A855F7]/30 bg-black/10">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={data.annotated_image_base64}
+            alt="PaliGemma detection result"
+            className="mx-auto h-auto w-1/2 object-contain"
+          />
+        </div>
+      )}
       {data.raw_output && (
         <p className="font-mono text-[11px] text-foreground/60 break-all leading-relaxed">
           {data.raw_output}

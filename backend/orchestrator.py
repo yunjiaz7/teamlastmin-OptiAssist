@@ -136,6 +136,7 @@ async def run_pipeline(
             raise RuntimeError(f"PaliGemma segmentation failed: {exc}") from exc
         n = len(result.get("detections", []))
         raw_output = result.get("raw_output", "")
+        annotated_image_base64 = result.get("annotated_image_base64", "")
         await emit(
             "paligemma_complete",
             json.dumps({
@@ -143,6 +144,7 @@ async def run_pipeline(
                 "segmentation": {
                     "raw_output": raw_output,
                     "detection_count": n,
+                    "annotated_image_base64": annotated_image_base64,
                 },
             }),
         )
