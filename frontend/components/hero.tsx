@@ -65,7 +65,7 @@ export function Hero({ onScrollToProblem }: { onScrollToProblem: () => void }) {
           </p>
           <div className="flex flex-col gap-1 text-xs text-muted-foreground">
             <p>Built for Google DeepMind X InstaLILY AI Hackathon 2026.</p>
-            <p>Built this system from 0 to 1 in 8 hours - won 2nd Prize.</p>
+            <p>Built this system from 0 to 1 in 8 hours - won 2nd Place.</p>
           </div>
           <div className="flex items-center gap-3 pt-2">
             <button
