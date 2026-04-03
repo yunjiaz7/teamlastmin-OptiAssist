@@ -67,17 +67,26 @@ SYSTEM_PROMPT = (
     "  severity: string — one of: 'None', 'Mild', 'Moderate', 'Severe', 'Proliferative'\n"
     "  severity_level: integer 0–4  (0=None, 1=Mild, 2=Moderate, 3=Severe, 4=Proliferative)\n"
     "  confidence: float 0.0–1.0\n"
-    "  findings: list of strings — specific observable findings "
-    "(e.g. 'increased cup-to-disc ratio', 'optic disc cupping', 'microaneurysms', "
-    "'hard exudates', 'neovascularisation')\n"
+    "  findings: list of strings — MUST be non-empty. Always list every observable feature "
+    "seen in the image, whether pathological or normal. For a Normal image, describe the "
+    "normal structures you observe (e.g. 'normal optic disc', 'clear macula', "
+    "'normal retinal vasculature'). For an abnormal image, list the specific abnormal findings "
+    "(e.g. 'increased cup-to-disc ratio', 'dark pigmented macular lesion', 'microaneurysms', "
+    "'hard exudates', 'neovascularisation'). Never return an empty list.\n"
     "  recommendation: string — clinical follow-up advice\n"
     "  disclaimer: string — always exactly: "
     "'For research use only. Not intended for clinical diagnosis.'\n\n"
-    "Example response:\n"
+    "Example — abnormal:\n"
     '{"condition": "Glaucoma", "severity": "Moderate", "severity_level": 2, '
     '"confidence": 0.82, '
     '"findings": ["increased cup-to-disc ratio", "optic disc cupping", "neuroretinal rim thinning"], '
     '"recommendation": "Refer to glaucoma specialist for IOP measurement and visual field testing.", '
+    '"disclaimer": "For research use only. Not intended for clinical diagnosis."}\n\n'
+    "Example — normal:\n"
+    '{"condition": "Normal", "severity": "None", "severity_level": 0, '
+    '"confidence": 0.91, '
+    '"findings": ["normal optic disc appearance", "clear macula", "normal retinal vasculature", "no haemorrhages"], '
+    '"recommendation": "Routine eye exam every 1-2 years.", '
     '"disclaimer": "For research use only. Not intended for clinical diagnosis."}'
 )
 
@@ -112,7 +121,7 @@ def _run_inference(messages: list[dict]) -> str:
     Returns:
         Raw text content of the model's last response turn.
     """
-    output = pipe(text=messages, max_new_tokens=512)
+    output = pipe(text=messages, max_new_tokens=512, do_sample=False)
     generated = output[0]["generated_text"]
 
     if isinstance(generated, list):
@@ -250,13 +259,21 @@ async def summarize_with_medgemma(context: str, question: str = "") -> str:
     return summary
 
 
-async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
+async def run_diagnosis(
+    image_bytes: bytes | None,
+    query: str,
+    image_description: str = "",
+) -> dict:
     """
     Produce a structured ophthalmological diagnosis using MedGemma.
 
     Args:
-        image_bytes: Raw bytes of the retinal image, or None for text-only queries.
-        query: The clinician's diagnostic question.
+        image_bytes:       Raw bytes of the retinal image, or None for text-only queries.
+        query:             The clinician's diagnostic question.
+        image_description: Pre-scan description from Gemma 3 (optional). When provided,
+                           it is appended to the user prompt as additional context so
+                           MedGemma can cross-reference its own image analysis with the
+                           findings already identified by the prescanner.
 
     Returns:
         A dict with keys: condition, severity, severity_level, confidence,
@@ -272,6 +289,15 @@ async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
         except Exception as e:
             raise RuntimeError(f"Failed to decode image bytes into PIL Image: {e}") from e
 
+    # Build the full query, injecting the pre-scan description when available so
+    # MedGemma has the Gemma 3 findings as additional context.
+    full_query = query
+    if image_description:
+        full_query = (
+            f"{query}\n\n"
+            f"Pre-scan image description (from Gemma 3):\n{image_description}"
+        )
+
     # Build the user message, attaching the image when available.
     # IMPORTANT: all content fields MUST be list-of-dicts (never a plain string).
     # The Gemma3Processor.apply_chat_template does:
@@ -282,17 +308,22 @@ async def run_diagnosis(image_bytes: bytes | None, query: str) -> dict:
     if pil_image is not None:
         user_content = [
             {"type": "image", "image": pil_image},
-            {"type": "text", "text": query},
+            {"type": "text", "text": full_query},
         ]
     else:
-        user_content = [{"type": "text", "text": query}]
+        user_content = [{"type": "text", "text": full_query}]
 
     messages = [
         {"role": "system", "content": [{"type": "text", "text": SYSTEM_PROMPT}]},
         {"role": "user", "content": user_content},
     ]
 
-    logger.info("Running MedGemma diagnosis. query=%s has_image=%s", query[:80], pil_image is not None)
+    logger.info(
+        "Running MedGemma diagnosis. query=%s has_image=%s has_prescan=%s",
+        query[:80],
+        pil_image is not None,
+        bool(image_description),
+    )
 
     try:
         # Offload blocking pipeline call to a thread to keep the event loop free

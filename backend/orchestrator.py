@@ -104,7 +104,7 @@ async def run_pipeline(
         await emit("medgemma_start", "Analyzing for pathological conditions...")
         try:
             from agents.diagnostician import run_diagnosis
-            result = await run_diagnosis(image_bytes, question)
+            result = await run_diagnosis(image_bytes, question, image_description)
         except Exception as exc:
             raise RuntimeError(f"MedGemma diagnosis failed: {exc}") from exc
         await emit(
@@ -132,6 +132,8 @@ async def run_pipeline(
         try:
             from agents.segmenter import run_segmentation
             result = await run_segmentation(image_bytes, query)
+        except (FileNotFoundError, ImportError):
+            raise  # propagate as-is so router.py can detect permanent model-loading errors
         except Exception as exc:
             raise RuntimeError(f"PaliGemma segmentation failed: {exc}") from exc
         n = len(result.get("detections", []))

@@ -554,14 +554,23 @@ export default function DemoPage() {
           </span>
 
           {steps.length === 0 && !result ? (
-            <div className="flex flex-1 items-center justify-center">
-              <div className="flex flex-col items-center gap-3 text-center">
-                <div className="size-12 rounded-xl bg-[rgba(255,255,255,0.04)] flex items-center justify-center">
-                  <Send className="size-5 text-muted-foreground" />
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Upload an image and ask a question to start analysis
+            <div className="flex flex-1 flex-col items-center justify-center gap-6 px-2">
+              <div className="w-full max-w-xl rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-4 flex flex-col gap-1.5">
+                <p className="text-[12px] font-semibold uppercase tracking-widest text-amber-400">
+                  ⚠️ Web Demo Notice
                 </p>
+                <p className="text-[13px] text-foreground/70 leading-relaxed">
+                  The backend runs entirely on-device and wasn&apos;t deployed for the web demo, since it uses SLMs for local inference instead of cloud APIs. Watch the recorded demo below to see OptiAssist in action.
+                </p>
+              </div>
+              <div className="w-full max-w-xl overflow-hidden rounded-xl border border-border aspect-video">
+                <iframe
+                  src="https://www.youtube.com/embed/Hzx4GWAeHUg"
+                  title="OptiAssist Demo"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                  className="h-full w-full"
+                />
               </div>
             </div>
           ) : (

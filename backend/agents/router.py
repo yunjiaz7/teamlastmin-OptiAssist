@@ -371,6 +371,11 @@ async def run_agentic_loop(
         for call in tool_calls:
             fn_name: str = call["function"]["name"]
             fn_args: dict = call["function"].get("arguments") or {}
+
+            if not fn_name:
+                logger.warning("FunctionGemma returned a tool_call with an empty function name; skipping.")
+                continue
+
             logger.info(
                 "FunctionGemma called tool=%s args=%s", fn_name, fn_args
             )
@@ -424,6 +429,20 @@ async def run_agentic_loop(
                             "detections_count": len(detections_out),
                             "detections": detections_out,
                         }),
+                    })
+                except (FileNotFoundError, ImportError) as exc:
+                    # Model is permanently unavailable (missing files or missing
+                    # dependency) — retrying will not help. Signal to FunctionGemma
+                    # to skip segmentation and call finish immediately.
+                    logger.error("run_segmentation_cb: model permanently unavailable, skipping: %s", exc)
+                    location = None
+                    should_finish = True
+                    tool_results.append({
+                        "name": "run_segmentation",
+                        "response": (
+                            "Segmentation model is permanently unavailable. "
+                            "Skip this tool and call finish immediately."
+                        ),
                     })
                 except Exception as exc:
                     logger.error("run_segmentation_cb raised: %s", exc)

@@ -43,6 +43,10 @@ _LOCAL_ADAPTER_FINAL = (
     / "final"
 )
 
+# Fallback: official PaliGemma 2 mix model (supports the same <loc####>
+# detection prompt format without needing a LoRA adapter).
+_BASE_MIX_MODEL_ID = "google/paligemma2-3b-mix-448"
+
 # ---------------------------------------------------------------------------
 # Internal cache so repeated calls don't reload the model from disk
 # ---------------------------------------------------------------------------
@@ -60,56 +64,74 @@ def _load_model_and_processor(adapter_dir: Path) -> tuple:
     """
     Load (processor, model) for the given adapter, using an in-process cache
     so subsequent calls skip the expensive from_pretrained step.
+
+    If ``adapter_config.json`` is not found inside ``adapter_dir``, falls back
+    to the official ``google/paligemma2-3b-mix-448`` model which supports the
+    same ``<loc####>`` detection prompt format without a LoRA adapter.
     """
     adapter_key = str(adapter_dir)
     if _LOADED.get("adapter_path") == adapter_key:
         return _LOADED["processor"], _LOADED["model"], _LOADED["device"], _LOADED["dtype"]
 
-    # ----------------------------------------------------------------
-    # 1. Read the adapter config to discover the base model
-    # ----------------------------------------------------------------
-    config_path = adapter_dir / "adapter_config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"adapter_config.json not found in {adapter_dir}")
-
-    with config_path.open() as f:
-        adapter_cfg = json.load(f)
-
-    base_id: str = adapter_cfg.get("base_model_name_or_path", "google/paligemma2-3b-pt-448")
-    logger.info("Loading base model: %s", base_id)
     device, dtype, device_map = _pick_runtime_settings()
+    config_path = adapter_dir / "adapter_config.json"
 
-    # ----------------------------------------------------------------
-    # 2. Processor
-    # ----------------------------------------------------------------
-    # Use the same processor class/options as training.
-    processor_source = base_id
-    processor = PaliGemmaProcessor.from_pretrained(processor_source, use_fast=True)
-    logger.info("Processor loaded from %s", processor_source)
+    if config_path.exists():
+        # ----------------------------------------------------------------
+        # Path A: fine-tuned LoRA adapter
+        # ----------------------------------------------------------------
+        with config_path.open() as f:
+            adapter_cfg = json.load(f)
 
-    # ----------------------------------------------------------------
-    # 3. Base model + LoRA adapter
-    # ----------------------------------------------------------------
-    base_model = PaliGemmaForConditionalGeneration.from_pretrained(
-        base_id,
-        device_map=device_map,
-        torch_dtype=dtype,
-    )
-    if device_map is None:
-        base_model = base_model.to(device)
-    logger.info("Base model loaded.")
+        base_id: str = adapter_cfg.get("base_model_name_or_path", "google/paligemma2-3b-pt-448")
+        logger.info("Loading fine-tuned model. base=%s adapter=%s", base_id, adapter_dir)
 
-    model = PeftModel.from_pretrained(base_model, str(adapter_dir))
-    model = model.merge_and_unload()
-    if device_map is None:
-        model = model.to(device)
-    model.eval()
-    logger.info("LoRA adapter merged. Model ready.")
+        processor = PaliGemmaProcessor.from_pretrained(base_id, use_fast=True)
+        logger.info("Processor loaded from %s", base_id)
+
+        base_model = PaliGemmaForConditionalGeneration.from_pretrained(
+            base_id,
+            device_map=device_map,
+            torch_dtype=dtype,
+        )
+        if device_map is None:
+            base_model = base_model.to(device)
+
+        model = PeftModel.from_pretrained(base_model, str(adapter_dir))
+        model = model.merge_and_unload()
+        if device_map is None:
+            model = model.to(device)
+        model.eval()
+        logger.info("LoRA adapter merged. Fine-tuned model ready.")
+
+    else:
+        # ----------------------------------------------------------------
+        # Path B: adapter files missing — fall back to official mix model.
+        # google/paligemma2-3b-mix-448 was trained on detection tasks and
+        # natively supports the <loc####> token format used here.
+        # ----------------------------------------------------------------
+        logger.warning(
+            "adapter_config.json not found in %s — falling back to %s",
+            adapter_dir,
+            _BASE_MIX_MODEL_ID,
+        )
+
+        processor = PaliGemmaProcessor.from_pretrained(_BASE_MIX_MODEL_ID, use_fast=True)
+        logger.info("Fallback processor loaded from %s", _BASE_MIX_MODEL_ID)
+
+        model = PaliGemmaForConditionalGeneration.from_pretrained(
+            _BASE_MIX_MODEL_ID,
+            device_map=device_map,
+            torch_dtype=dtype,
+        )
+        if device_map is None:
+            model = model.to(device)
+        model.eval()
+        logger.info("Fallback model loaded: %s", _BASE_MIX_MODEL_ID)
 
     _LOADED["processor"] = processor
     _LOADED["model"] = model
     _LOADED["adapter_path"] = adapter_key
-    _LOADED["base_id"] = base_id
     _LOADED["device"] = device
     _LOADED["dtype"] = dtype
 
@@ -194,15 +216,6 @@ def run_paligemma_detection(
         adapter_dir = _LOCAL_ADAPTER_FINAL
     else:
         adapter_dir = Path(adapter_dir)
-
-    # Force local adapter path usage for deterministic, offline-safe behavior.
-    if adapter_dir.resolve() != _LOCAL_ADAPTER_FINAL.resolve():
-        logger.warning(
-            "Ignoring non-default adapter_dir=%s; using local adapter at %s",
-            adapter_dir,
-            _LOCAL_ADAPTER_FINAL,
-        )
-    adapter_dir = _LOCAL_ADAPTER_FINAL
 
     try:
         processor, model, device, dtype = _load_model_and_processor(adapter_dir)

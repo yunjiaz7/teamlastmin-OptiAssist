@@ -134,6 +134,8 @@ async def run_segmentation(image_bytes: bytes, query: str = _DETECTION_PROMPT) -
 
     try:
         result = await asyncio.to_thread(_run_inference_sync, image_bytes)
+    except (FileNotFoundError, ImportError):
+        raise  # propagate as-is so router.py can detect permanent model-loading errors
     except Exception as e:
         raise RuntimeError(f"PaliGemma 2 inference failed: {e}") from e
 
