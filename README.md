@@ -10,11 +10,8 @@ OptiAssist is a multi-model AI pipeline that analyzes retinal fundus images and 
 
 [![Watch the demo](https://img.youtube.com/vi/Hzx4GWAeHUg/maxresdefault.jpg)](https://youtu.be/Hzx4GWAeHUg)
 
-**Sample input used in the demo:**
-
-![Sample retinal fundus image](data/sample_images/issue-img.png)
-
-> **Question:** What is the cup-to-disc ratio?
+- **Image:** `data/sample_images/issue-img.png`
+- **Question:** `What is the cup-to-disc ratio?`
 
 ---
 
